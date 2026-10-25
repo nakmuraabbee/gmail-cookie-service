@@ -264,9 +264,34 @@ def home():
         "service": "Google Authenticated Cookie Provider",
         "endpoints": {
             "/get?cookies=gemini": "Live Gemini login cookies (SID, HSID, SSID, etc.)",
-            "/get?cookies=youtube": "Live YouTube login cookies (SID, HSID, SSID, etc.)"
+            "/get?cookies=youtube": "Live YouTube login cookies (SID, HSID, SSID, etc.)",
+            "/login": "One-time direct cloud login (POST {email, password})"
         }
     })
+
+
+@app.route("/login", methods=["POST", "GET"])
+def api_login():
+    """সার্ভারে সরাসরি একবার Google অ্যাকাউন্টে লগইন করে পার্মানেন্ট লিনাক্স প্রোফাইল বানানোর এন্ডপয়েন্ট।"""
+    email = request.args.get("email") or (request.json or {}).get("email") or "illukailluma@gmail.com"
+    password = request.args.get("password") or (request.json or {}).get("password")
+
+    if not password:
+        return jsonify({
+            "success": False,
+            "message": "Password is required for first-time cloud authorization.",
+            "usage": "POST /login with JSON {'email': '...', 'password': '...'}"
+        }), 400
+
+    try:
+        from cloud_login import perform_login
+        asyncio.run(perform_login(email, password))
+        return jsonify({
+            "success": True,
+            "message": f"Successfully authenticated {email} directly on Linux cloud server!"
+        })
+    except Exception as e:
+        return jsonify({"success": False, "error": str(e)}), 500
 
 
 @app.route("/get", methods=["GET"])
