@@ -81,10 +81,22 @@ async def handle_remote_action(action: str, params: dict):
         await page.mouse.click(x, y)
         await page.wait_for_timeout(1000)
 
-    elif action == "type":
+    elif action == "fill":
         text = params.get("text", "")
-        await page.keyboard.type(text, delay=30)
-        await page.wait_for_timeout(500)
+        # Directly fill whatever input box is active on the screen (Email or Password)
+        try:
+            if await page.locator('input[type="email"]').is_visible():
+                await page.fill('input[type="email"]', text)
+            elif await page.locator('input[type="password"]').is_visible():
+                await page.fill('input[type="password"]', text)
+            elif await page.locator('input:visible').count() > 0:
+                await page.fill('input:visible', text)
+            else:
+                await page.keyboard.type(text, delay=30)
+        except Exception as e:
+            print(f"[!] Direct fill error: {e}")
+            await page.keyboard.type(text, delay=30)
+        await page.wait_for_timeout(800)
 
     elif action == "key":
         key = params.get("key", "Enter")
