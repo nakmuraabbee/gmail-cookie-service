@@ -80,15 +80,30 @@ def find_chrome_binary():
 # ─────────────────────────────────────────────────────────
 
 def load_session_file():
-    """gmail_session_data.json থেকে cookies লোড করো।"""
-    if not os.path.exists(SESSION_FILE):
-        return None
-    try:
-        with open(SESSION_FILE, "r", encoding="utf-8") as f:
-            return json.load(f)
-    except Exception as e:
-        print(f"[!] Error loading {SESSION_FILE}: {e}")
-        return None
+    """gmail_session_data.json অথবা seed_cookies.json থেকে cookies লোড করো।"""
+    # 1. Try gmail_session_data.json first
+    if os.path.exists(SESSION_FILE):
+        try:
+            with open(SESSION_FILE, "r", encoding="utf-8") as f:
+                data = json.load(f)
+                if data and data.get("cookies"):
+                    return data
+        except Exception as e:
+            print(f"[!] Error loading {SESSION_FILE}: {e}")
+
+    # 2. Fallback to seed_cookies.json
+    seed_file = os.path.join(BASE_DIR, "seed_cookies.json")
+    if os.path.exists(seed_file):
+        try:
+            with open(seed_file, "r", encoding="utf-8") as f:
+                seed_data = json.load(f)
+                if seed_data and seed_data.get("cookies"):
+                    print("[+] Initialized session from seed_cookies.json!")
+                    return seed_data
+        except Exception as e:
+            print(f"[!] Error loading {seed_file}: {e}")
+
+    return None
 
 
 def build_requests_session(cookies: list) -> requests.Session:
