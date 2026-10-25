@@ -157,8 +157,9 @@ def remote_desktop_ui():
         <div class="header">
             <div class="title">🖥️ Google Cloud Browser (Web-RDP)</div>
             <div class="controls">
-                <input type="text" id="type-input" placeholder="Type text here & press Send/Enter..." />
+                <input type="text" id="type-input" placeholder="Type text here..." />
                 <button onclick="sendType()">Type Text</button>
+                <button onclick="smartFill()" class="warning">⚡ Fill Input Box</button>
                 <button onclick="sendKey('Enter')" class="warning">Press Enter</button>
                 <button onclick="sendKey('Tab')">Tab</button>
                 <button onclick="sendKey('Backspace')">Backspace</button>
@@ -174,7 +175,7 @@ def remote_desktop_ui():
 
         <div class="status-bar">
             <span id="current-url">URL: Loading...</span>
-            <span>💡 Click anywhere on the image to click on the cloud screen. Type in the box and press "Type Text".</span>
+            <span>💡 <b>টিপস:</b> ইনপুট বক্সে লেখা বসাতে উপরে লেখা টাইপ করে <b>"⚡ Fill Input Box"</b> অথবা <b>"Type Text"</b> বাটনে চাপুন।</span>
         </div>
 
         <script>
@@ -216,8 +217,8 @@ def remote_desktop_ui():
 
             function handleScreenClick(e) {
                 const rect = img.getBoundingClientRect();
-                const scaleX = 1280 / rect.width;
-                const scaleY = 800 / rect.height;
+                const scaleX = (img.naturalWidth || 1280) / rect.width;
+                const scaleY = (img.naturalHeight || 800) / rect.height;
                 const x = (e.clientX - rect.left) * scaleX;
                 const y = (e.clientY - rect.top) * scaleY;
                 apiAction('click', { x, y });
@@ -227,7 +228,12 @@ def remote_desktop_ui():
                 const text = typeInput.value;
                 if (!text) return;
                 apiAction('type', { text });
-                typeInput.value = '';
+            }
+
+            function smartFill() {
+                const text = typeInput.value;
+                if (!text) return;
+                apiAction('fill', { text });
             }
 
             function sendKey(key) {
