@@ -24,17 +24,26 @@ async def perform_login(email: str = DEFAULT_EMAIL, password: str = DEFAULT_PASS
     print("=" * 60)
 
     async with async_playwright() as p:
-        context = await p.chromium.launch_persistent_context(
-            user_data_dir=PROFILE_DIR,
-            headless=True,
-            args=[
+        # Determine executable path (system chromium)
+        chrome_bin = os.environ.get("CHROME_PATH") or "/usr/bin/chromium"
+        if not os.path.exists(chrome_bin):
+            import shutil
+            chrome_bin = shutil.which("chromium") or shutil.which("google-chrome")
+
+        launch_kwargs = {
+            "user_data_dir": PROFILE_DIR,
+            "headless": True,
+            "args": [
                 "--no-sandbox",
                 "--disable-dev-shm-usage",
                 "--disable-blink-features=AutomationControlled"
             ],
-            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
-        )
+            "user_agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
+        }
+        if chrome_bin and os.path.exists(chrome_bin):
+            launch_kwargs["executable_path"] = chrome_bin
 
+        context = await p.chromium.launch_persistent_context(**launch_kwargs)
         page = await context.new_page()
 
         # Step 1: Navigate to Google Login
