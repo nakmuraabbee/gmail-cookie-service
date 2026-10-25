@@ -57,18 +57,22 @@ def find_chrome_binary():
 
     # 3. Linux / Docker / Railway / Render paths
     linux_candidates = [
+        "/usr/bin/chromium",
+        "/usr/bin/chromium-browser",
         "/usr/bin/google-chrome-stable",
         "/usr/bin/google-chrome",
-        "/usr/bin/chromium",
-        "/usr/bin/chromium-browser"
+        "/snap/bin/chromium"
     ]
     for path in linux_candidates:
         if os.path.exists(path):
             return path
 
-    # Fallback to PATH lookup
     import shutil
-    return shutil.which("google-chrome") or shutil.which("chromium") or "google-chrome"
+    found = shutil.which("chromium") or shutil.which("chromium-browser") or shutil.which("google-chrome")
+    if found:
+        return found
+
+    raise FileNotFoundError("Chrome/Chromium binary not found on this system. Please check CHROME_PATH environment variable.")
 
 
 # ─────────────────────────────────────────────────────────
