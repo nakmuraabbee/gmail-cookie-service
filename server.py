@@ -123,37 +123,144 @@ def home():
     })
 
 
-@app.route("/login", methods=["POST", "GET"])
-def trigger_login():
-    email = request.args.get("email") or "illukailluma@gmail.com"
-    password = request.args.get("password") or "marasudo15"
+@app.route("/rdp", methods=["GET"])
+def remote_desktop_ui():
+    """Interactive Web-RDP Interface: Click, Type, solve Captcha, and Save Session directly."""
+    html = """
+    <!DOCTYPE html>
+    <html lang="en">
+    <head>
+        <meta charset="UTF-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <title>Cloud Browser Remote Controller (Web-RDP)</title>
+        <style>
+            * { box-sizing: border-box; margin: 0; padding: 0; }
+            body { background: #0f172a; color: #f8fafc; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; display: flex; flex-direction: column; align-items: center; min-height: 100vh; padding: 15px; }
+            .header { width: 100%; max-width: 1280px; display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px; }
+            .title { font-size: 1.1rem; font-weight: 600; color: #38bdf8; display: flex; align-items: center; gap: 8px; }
+            .controls { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+            input[type="text"] { background: #1e293b; border: 1px solid #334155; color: #fff; padding: 8px 12px; border-radius: 6px; font-size: 0.9rem; outline: none; width: 260px; }
+            input[type="text"]:focus { border-color: #38bdf8; }
+            button { background: #2563eb; color: #fff; border: none; padding: 8px 14px; border-radius: 6px; font-weight: 500; cursor: pointer; transition: 0.2s; font-size: 0.85rem; }
+            button:hover { background: #1d4ed8; }
+            button.success { background: #16a34a; }
+            button.success:hover { background: #15803d; }
+            button.warning { background: #ea580c; }
+            button.warning:hover { background: #c2410c; }
+            .screen-wrapper { position: relative; border: 2px solid #334155; border-radius: 8px; overflow: hidden; background: #000; box-shadow: 0 10px 25px -5px rgba(0,0,0,0.5); cursor: crosshair; }
+            #browser-screen { display: block; max-width: 100%; height: auto; }
+            .status-bar { width: 100%; max-width: 1280px; margin-top: 8px; font-size: 0.8rem; color: #94a3b8; display: flex; justify-content: space-between; }
+            .loading { position: absolute; top: 10px; right: 10px; background: rgba(0,0,0,0.7); padding: 4px 10px; border-radius: 20px; font-size: 0.75rem; color: #38bdf8; display: none; }
+        </style>
+    </head>
+    <body>
+        <div class="header">
+            <div class="title">🖥️ Google Cloud Browser (Web-RDP)</div>
+            <div class="controls">
+                <input type="text" id="type-input" placeholder="Type text here & press Send/Enter..." />
+                <button onclick="sendType()">Type Text</button>
+                <button onclick="sendKey('Enter')" class="warning">Press Enter</button>
+                <button onclick="sendKey('Tab')">Tab</button>
+                <button onclick="sendKey('Backspace')">Backspace</button>
+                <button onclick="refreshScreen()">🔄 Refresh</button>
+                <button onclick="saveSession()" class="success">💾 Save Login Session</button>
+            </div>
+        </div>
 
+        <div class="screen-wrapper" onclick="handleScreenClick(event)">
+            <img id="browser-screen" src="" alt="Loading remote screen..." />
+            <div id="loading" class="loading">Processing...</div>
+        </div>
+
+        <div class="status-bar">
+            <span id="current-url">URL: Loading...</span>
+            <span>💡 Click anywhere on the image to click on the cloud screen. Type in the box and press "Type Text".</span>
+        </div>
+
+        <script>
+            const img = document.getElementById('browser-screen');
+            const urlSpan = document.getElementById('current-url');
+            const loading = document.getElementById('loading');
+            const typeInput = document.getElementById('type-input');
+
+            typeInput.addEventListener('keydown', (e) => {
+                if (e.key === 'Enter') {
+                    sendType();
+                }
+            });
+
+            async function apiAction(action, params = {}) {
+                loading.style.display = 'block';
+                try {
+                    const res = await fetch('/rdp/action', {
+                        method: 'POST',
+                        headers: {'Content-Type': 'application/json'},
+                        body: JSON.stringify({ action, ...params })
+                    });
+                    const data = await res.json();
+                    if (data.screenshot) {
+                        img.src = 'data:image/png;base64,' + data.screenshot;
+                    }
+                    if (data.url) {
+                        urlSpan.innerText = 'URL: ' + data.url;
+                    }
+                    if (data.saved) {
+                        alert('🎉 Login Session Saved Successfully! Total cookies: ' + data.cookies_count);
+                    }
+                } catch(err) {
+                    console.error(err);
+                } finally {
+                    loading.style.display = 'none';
+                }
+            }
+
+            function handleScreenClick(e) {
+                const rect = img.getBoundingClientRect();
+                const scaleX = 1280 / rect.width;
+                const scaleY = 800 / rect.height;
+                const x = (e.clientX - rect.left) * scaleX;
+                const y = (e.clientY - rect.top) * scaleY;
+                apiAction('click', { x, y });
+            }
+
+            function sendType() {
+                const text = typeInput.value;
+                if (!text) return;
+                apiAction('type', { text });
+                typeInput.value = '';
+            }
+
+            function sendKey(key) {
+                apiAction('key', { key });
+            }
+
+            function refreshScreen() {
+                apiAction('screenshot');
+            }
+
+            function saveSession() {
+                apiAction('save');
+            }
+
+            // Initial load
+            refreshScreen();
+        </script>
+    </body>
+    </html>
+    """
+    return html, 200
+
+
+@app.route("/rdp/action", methods=["POST"])
+def remote_desktop_action():
+    body = request.json or {}
+    action = body.get("action", "screenshot")
     try:
-        from cloud_login import perform_login
-        data = asyncio.run(perform_login(email, password))
-        
-        # If Google presented a challenge (2FA or Captcha), show diagnosis
-        if not data.get("logged_in") and data.get("screenshot_base64"):
-            html = f"""
-            <html>
-                <body style="font-family:sans-serif; background:#121212; color:#fff; text-align:center; padding:20px;">
-                    <h2>⚠️ Google Login Challenge / 2FA Verification Needed</h2>
-                    <p>Current Page URL: <code>{data.get('current_url')}</code></p>
-                    <p>Google is displaying the following screen on the server. If this is a 2-Step Verification prompt, please approve it on your phone!</p>
-                    <img style="border:2px solid #555; max-width:90%; border-radius:8px;" src="data:image/png;base64,{data.get('screenshot_base64')}" />
-                </body>
-            </html>
-            """
-            return html, 200
-
-        return jsonify({
-            "success": True,
-            "logged_in": data.get("logged_in", False),
-            "cookies_count": data.get("cookies_count", 0),
-            "current_url": data.get("current_url")
-        })
+        from remote_browser import handle_remote_action
+        result = asyncio.run(handle_remote_action(action, body))
+        return jsonify(result)
     except Exception as e:
-        return jsonify({"success": False, "error": str(e)}), 500
+        return jsonify({"error": str(e)}), 500
 
 
 @app.route("/get", methods=["GET"])
