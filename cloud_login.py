@@ -54,8 +54,12 @@ async def perform_login(email: str = DEFAULT_EMAIL, password: str = DEFAULT_PASS
         # Step 2: Fill Email
         print(f"[*] Submitting email: {email}...")
         try:
-            await page.fill('input[type="email"]', email)
-            await page.click('#identifierNext')
+            # Wait for email input
+            email_input = await page.wait_for_selector('input[type="email"], #identifierId', timeout=10000)
+            await email_input.click()
+            await email_input.fill("")
+            await page.keyboard.type(email, delay=50)
+            await page.keyboard.press("Enter")
             await page.wait_for_timeout(4000)
         except Exception as e:
             print(f"[!] Email submission error: {e}")
@@ -63,8 +67,10 @@ async def perform_login(email: str = DEFAULT_EMAIL, password: str = DEFAULT_PASS
         # Step 3: Fill Password
         print("[*] Submitting password...")
         try:
-            await page.fill('input[type="password"]', password)
-            await page.click('#passwordNext')
+            pw_input = await page.wait_for_selector('input[type="password"], input[name="Passwd"]', timeout=8000)
+            await pw_input.click()
+            await page.keyboard.type(password, delay=50)
+            await page.keyboard.press("Enter")
             await page.wait_for_timeout(6000)
         except Exception as e:
             print(f"[!] Password submission error: {e}")
