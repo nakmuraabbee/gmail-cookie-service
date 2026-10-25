@@ -33,8 +33,8 @@ if not os.path.exists(PROFILE_PATH) and os.path.exists(ZIP_PROFILE):
     print("[*] Extracting chrome_profile.zip...")
     import zipfile
     with zipfile.ZipFile(ZIP_PROFILE, 'r') as zip_ref:
-        zip_ref.extractall(PROFILE_PATH)
-    print("[+] chrome_profile extracted successfully!")
+        zip_ref.extractall(BASE_DIR)
+    print(f"[+] chrome_profile extracted to {PROFILE_PATH}!")
 # ==========================================================
 
 
@@ -208,7 +208,25 @@ async def _cdp_get_cookies(ws_url):
 
 
 def extract_cookies_via_cdp():
+    """Wait for page load and extract all browser cookies via CDP."""
+    # Give Gmail 8-10 seconds to hit Google network and authenticate
+    time.sleep(8)
     tabs = wait_for_cdp()
+
+    # Try browser-level websocket target first (fetches all cookies across all domains)
+    try:
+        r = requests.get(f"http://127.0.0.1:{CDP_PORT}/json/version", timeout=3)
+        if r.status_code == 200:
+            browser_ws = r.json().get("webSocketDebuggerUrl")
+            if browser_ws:
+                print(f"[*] Fetching cookies from browser target: {browser_ws}")
+                cookies = asyncio.run(_cdp_get_cookies(browser_ws))
+                if len(cookies) > 5:
+                    return cookies
+    except Exception as e:
+        print(f"[!] Browser target cookie fetch error: {e}")
+
+    # Fallback to page tab target
     page_tab = next((t for t in tabs if t.get("type") == "page"), tabs[0])
     ws_url = page_tab["webSocketDebuggerUrl"]
     return asyncio.run(_cdp_get_cookies(ws_url))
