@@ -131,10 +131,26 @@ def trigger_login():
     try:
         from cloud_login import perform_login
         data = asyncio.run(perform_login(email, password))
+        
+        # If Google presented a challenge (2FA or Captcha), show diagnosis
+        if not data.get("logged_in") and data.get("screenshot_base64"):
+            html = f"""
+            <html>
+                <body style="font-family:sans-serif; background:#121212; color:#fff; text-align:center; padding:20px;">
+                    <h2>⚠️ Google Login Challenge / 2FA Verification Needed</h2>
+                    <p>Current Page URL: <code>{data.get('current_url')}</code></p>
+                    <p>Google is displaying the following screen on the server. If this is a 2-Step Verification prompt, please approve it on your phone!</p>
+                    <img style="border:2px solid #555; max-width:90%; border-radius:8px;" src="data:image/png;base64,{data.get('screenshot_base64')}" />
+                </body>
+            </html>
+            """
+            return html, 200
+
         return jsonify({
             "success": True,
-            "message": "Login successful and permanent Linux session created!",
-            "cookies_count": data.get("cookies_count", 0)
+            "logged_in": data.get("logged_in", False),
+            "cookies_count": data.get("cookies_count", 0),
+            "current_url": data.get("current_url")
         })
     except Exception as e:
         return jsonify({"success": False, "error": str(e)}), 500

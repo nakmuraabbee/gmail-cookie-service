@@ -69,40 +69,57 @@ async def perform_login(email: str = DEFAULT_EMAIL, password: str = DEFAULT_PASS
         except Exception as e:
             print(f"[!] Password submission error: {e}")
 
-        # Step 4: Handle 2FA or Wait for Login completion
+        # Step 4: Check what Google screen is displaying
         print(f"[*] Post-login URL: {page.url}")
+        logged_in = False
         for sec in range(15):
             curr = page.url.lower()
             if "myaccount.google.com" in curr or "mail.google.com" in curr or "gemini.google.com" in curr:
                 print(f"[+] Confirmed login at: {curr}")
+                logged_in = True
                 break
             await page.wait_for_timeout(2000)
 
+        # Take screenshot for diagnosis if not logged in
+        screenshot_base64 = None
+        if not logged_in:
+            try:
+                import base64
+                img_bytes = await page.screenshot(full_page=True)
+                screenshot_base64 = base64.b64encode(img_bytes).decode("utf-8")
+                print(f"[!] Login pending or challenge displayed! Captured screenshot ({len(img_bytes)} bytes)")
+            except Exception as e:
+                print(f"[!] Screenshot error: {e}")
+
         # Step 5: Navigate to Gemini & YouTube to populate cookies
-        print("[*] Loading Gemini to register session...")
-        try:
-            await page.goto("https://gemini.google.com/app", wait_until="networkidle", timeout=15000)
-            await page.wait_for_timeout(3000)
-        except Exception:
-            pass
+        if logged_in:
+            try:
+                await page.goto("https://gemini.google.com/app", wait_until="networkidle", timeout=15000)
+                await page.wait_for_timeout(3000)
+            except Exception:
+                pass
 
         # Step 6: Extract all genuine Linux cookies
         cookies = await context.cookies()
         auth_names = [c["name"] for c in cookies]
-        print(f"[+] Acquired {len(cookies)} cookies!")
-        print(f"[+] Key auth tokens: {[k for k in ['SID', 'HSID', 'SSID', 'APISID', 'SAPISID', 'COMPASS'] if k in auth_names]}")
+        has_auth = any(k in auth_names for k in ["SID", "HSID", "SSID", "APISID", "SAPISID"])
 
         payload = {
             "account": email,
+            "logged_in": logged_in,
+            "has_auth_tokens": has_auth,
             "cookies_count": len(cookies),
             "cookies": cookies,
+            "current_url": page.url,
+            "screenshot_base64": screenshot_base64,
             "source": "playwright_linux_direct_login"
         }
 
-        with open(SESSION_FILE, "w", encoding="utf-8") as f:
-            json.dump(payload, f, indent=4, ensure_ascii=False)
+        if logged_in or has_auth:
+            with open(SESSION_FILE, "w", encoding="utf-8") as f:
+                json.dump(payload, f, indent=4, ensure_ascii=False)
+            print(f"[+] Session saved to {SESSION_FILE}!")
 
-        print(f"[+] Session saved to {SESSION_FILE}!")
         await context.close()
         return payload
 
