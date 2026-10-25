@@ -207,19 +207,62 @@ async def _cdp_get_cookies(ws_url):
         return data.get("result", {}).get("cookies", [])
 
 
+async def _cdp_inject_and_load(ws_url, seed_cookies):
+    """Seed cookies ইনজেক্ট করে Gmail পেজ রিফ্রেশ করো।"""
+    async with websockets.connect(ws_url) as ws:
+        # Enable Network and Page
+        await ws.send(json.dumps({"id": 1, "method": "Network.enable"}))
+        await ws.recv()
+        await ws.send(json.dumps({"id": 2, "method": "Page.enable"}))
+        await ws.recv()
+
+        # Inject existing seed cookies
+        if seed_cookies:
+            clean_cookies = []
+            for c in seed_cookies:
+                item = {
+                    "name": c["name"],
+                    "value": c["value"],
+                    "domain": c.get("domain", ".google.com"),
+                    "path": c.get("path", "/")
+                }
+                clean_cookies.append(item)
+            await ws.send(json.dumps({"id": 3, "method": "Network.setCookies", "params": {"cookies": clean_cookies}}))
+            await ws.recv()
+            print(f"[+] Injected {len(clean_cookies)} seed cookies into Chromium!")
+
+        # Navigate to Gmail
+        await ws.send(json.dumps({"id": 4, "method": "Page.navigate", "params": {"url": GMAIL_URL}}))
+        await ws.recv()
+
+
 def extract_cookies_via_cdp():
     """Wait for page load and extract all browser cookies via CDP."""
-    # Give Gmail 8-10 seconds to hit Google network and authenticate
-    time.sleep(8)
     tabs = wait_for_cdp()
+    page_tab = next((t for t in tabs if t.get("type") == "page"), tabs[0])
+    ws_url = page_tab["webSocketDebuggerUrl"]
 
-    # Try browser-level websocket target first (fetches all cookies across all domains)
+    # Load seed cookies if available
+    seed_file = os.path.join(BASE_DIR, "seed_cookies.json")
+    seed_cookies = []
+    if os.path.exists(seed_file):
+        try:
+            with open(seed_file, "r", encoding="utf-8") as f:
+                seed_data = json.load(f)
+                seed_cookies = seed_data.get("cookies", [])
+        except Exception:
+            pass
+
+    # Inject and reload
+    asyncio.run(_cdp_inject_and_load(ws_url, seed_cookies))
+    time.sleep(10)  # Wait for Google login refresh and token rotation
+
+    # Try browser target first
     try:
         r = requests.get(f"http://127.0.0.1:{CDP_PORT}/json/version", timeout=3)
         if r.status_code == 200:
             browser_ws = r.json().get("webSocketDebuggerUrl")
             if browser_ws:
-                print(f"[*] Fetching cookies from browser target: {browser_ws}")
                 cookies = asyncio.run(_cdp_get_cookies(browser_ws))
                 if len(cookies) > 5:
                     return cookies
@@ -227,8 +270,6 @@ def extract_cookies_via_cdp():
         print(f"[!] Browser target cookie fetch error: {e}")
 
     # Fallback to page tab target
-    page_tab = next((t for t in tabs if t.get("type") == "page"), tabs[0])
-    ws_url = page_tab["webSocketDebuggerUrl"]
     return asyncio.run(_cdp_get_cookies(ws_url))
 
 
