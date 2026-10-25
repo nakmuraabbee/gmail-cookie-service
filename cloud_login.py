@@ -14,8 +14,8 @@ BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 PROFILE_DIR = os.path.join(BASE_DIR, "linux_chrome_profile")
 SESSION_FILE = os.path.join(BASE_DIR, "session_data.json")
 
-DEFAULT_EMAIL = "illukailluma@gmail.com"
-DEFAULT_PASSWORD = os.environ.get("GOOGLE_PASSWORD", "marasudo15")
+DEFAULT_EMAIL = "sallgimal1099@gmail.com"
+DEFAULT_PASSWORD = os.environ.get("GOOGLE_PASSWORD", "marasudo1")
 
 
 async def perform_login(email: str = DEFAULT_EMAIL, password: str = DEFAULT_PASSWORD):
