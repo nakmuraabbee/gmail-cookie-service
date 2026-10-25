@@ -25,7 +25,6 @@ app = Flask(__name__)
 # ========================= CONFIG =========================
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 SESSION_FILE = os.path.join(BASE_DIR, "session_data.json")
-SEED_FILE = os.path.join(BASE_DIR, "seed_cookies.json")
 PROFILE_PATH = os.path.join(BASE_DIR, "chrome_profile")
 ZIP_PROFILE = os.path.join(BASE_DIR, "chrome_profile.zip")
 CDP_PORT = 9222
@@ -87,8 +86,7 @@ def find_chrome_binary():
 # ─────────────────────────────────────────────────────────
 
 def load_session_file():
-    """session_data.json অথবা seed_cookies.json থেকে cookies লোড করো।"""
-    # 1. Try session_data.json
+    """session_data.json থেকে সেভ থাকা cookies লোড করো।"""
     if os.path.exists(SESSION_FILE):
         try:
             with open(SESSION_FILE, "r", encoding="utf-8") as f:
@@ -97,17 +95,6 @@ def load_session_file():
                     return data
         except Exception as e:
             print(f"[!] Error loading {SESSION_FILE}: {e}")
-
-    # 2. Try seed_cookies.json
-    if os.path.exists(SEED_FILE):
-        try:
-            with open(SEED_FILE, "r", encoding="utf-8") as f:
-                seed_data = json.load(f)
-                if seed_data and seed_data.get("cookies"):
-                    return seed_data
-        except Exception as e:
-            print(f"[!] Error loading {SEED_FILE}: {e}")
-
     return None
 
 
@@ -245,38 +232,12 @@ async def _cdp_get_cookies(ws_url):
         return data.get("result", {}).get("cookies", [])
 
 
-async def _cdp_inject_and_load(ws_url, seed_cookies, target_url):
-    async with websockets.connect(ws_url) as ws:
-        await ws.send(json.dumps({"id": 1, "method": "Network.enable"}))
-        await ws.recv()
-        await ws.send(json.dumps({"id": 2, "method": "Page.enable"}))
-        await ws.recv()
-
-        if seed_cookies:
-            clean_cookies = []
-            for c in seed_cookies:
-                clean_cookies.append({
-                    "name": c["name"],
-                    "value": c["value"],
-                    "domain": c.get("domain", ".google.com"),
-                    "path": c.get("path", "/")
-                })
-            await ws.send(json.dumps({"id": 3, "method": "Network.setCookies", "params": {"cookies": clean_cookies}}))
-            await ws.recv()
-
-        await ws.send(json.dumps({"id": 4, "method": "Page.navigate", "params": {"url": target_url}}))
-        await ws.recv()
-
-
 def extract_cookies_via_cdp(target_url: str):
     tabs = wait_for_cdp()
     page_tab = next((t for t in tabs if t.get("type") == "page"), tabs[0])
     ws_url = page_tab["webSocketDebuggerUrl"]
 
-    seed_data = load_session_file() or {}
-    seed_cookies = seed_data.get("cookies", [])
-
-    asyncio.run(_cdp_inject_and_load(ws_url, seed_cookies, target_url))
+    # Wait for Chromium to authenticate using chrome_profile
     time.sleep(10)
 
     try:
