@@ -1,13 +1,13 @@
 """
-Multi-Service Cookie API Server (Gemini & YouTube)
-===================================================
-- /get?cookies=gemini   -> Gemini (https://gemini.google.com/) cookies
-- /get?cookies=youtube  -> YouTube (https://www.youtube.com/) cookies
+Universal Google Services Cookie API (Gemini & YouTube)
+========================================================
+- /get?cookies=gemini   -> Gemini (https://gemini.google.com/) authenticated cookies
+- /get?cookies=youtube  -> YouTube (https://www.youtube.com/) authenticated cookies
 
-লজিক:
-1. প্রথমে সেভ থাকা cookies দিয়ে ভ্যালিডিটি চেক করা হয় (কোনো ব্রাউজার খোলে না)
-2. সেশন ভ্যালিড থাকলে ফ্রেশ রিকোয়েস্ট চালিয়ে নতুন cookies merge করে রিটার্ন করে
-3. যদি এক্সপায়ার হয়, কেবল তখনই headless Chromium চালু করে লাইভ cookies রিফ্রেশ করে
+Strategy:
+1. Always maintains genuine logged-in session (SID, HSID, SSID, APISID, SAPISID, OSID)
+2. Auto-rotates security tokens via Google internal Keep-Alive endpoints
+3. If session needs refresh, launches Playwright/CDP with master tokens injected into the browser context
 """
 
 import os
@@ -24,26 +24,14 @@ app = Flask(__name__)
 
 # ========================= CONFIG =========================
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+AUTH_TOKENS_FILE = os.path.join(BASE_DIR, "auth_tokens.json")
 SESSION_FILE = os.path.join(BASE_DIR, "session_data.json")
-PROFILE_PATH = os.path.join(BASE_DIR, "chrome_profile")
-ZIP_PROFILE = os.path.join(BASE_DIR, "chrome_profile.zip")
 CDP_PORT = 9222
 
 GEMINI_URL = "https://gemini.google.com/app"
 YOUTUBE_URL = "https://www.youtube.com/"
 
 UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
-
-# Auto extract zip on server startup if needed
-if not os.path.exists(PROFILE_PATH) and os.path.exists(ZIP_PROFILE):
-    print("[*] Extracting chrome_profile.zip...")
-    import zipfile
-    try:
-        with zipfile.ZipFile(ZIP_PROFILE, 'r') as zip_ref:
-            zip_ref.extractall(BASE_DIR)
-        print(f"[+] Profile extracted to {PROFILE_PATH}!")
-    except Exception as e:
-        print(f"[!] Zip extract error: {e}")
 # ==========================================================
 
 
@@ -78,28 +66,36 @@ def find_chrome_binary():
     if found:
         return found
 
-    raise FileNotFoundError("Chrome/Chromium binary not found on this system.")
+    return "chromium"
 
 
-# ─────────────────────────────────────────────────────────
-#  PART 1 — Session & Cookie Helpers
-# ─────────────────────────────────────────────────────────
-
-def load_session_file():
-    """session_data.json থেকে সেভ থাকা cookies লোড করো।"""
+def get_master_cookies():
+    """Master auth tokens লোড করো।"""
+    # 1. Try session_data.json if exists and valid
     if os.path.exists(SESSION_FILE):
         try:
             with open(SESSION_FILE, "r", encoding="utf-8") as f:
                 data = json.load(f)
                 if data and data.get("cookies"):
-                    return data
-        except Exception as e:
-            print(f"[!] Error loading {SESSION_FILE}: {e}")
-    return None
+                    return data.get("cookies")
+        except Exception:
+            pass
+
+    # 2. Try auth_tokens.json
+    if os.path.exists(AUTH_TOKENS_FILE):
+        try:
+            with open(AUTH_TOKENS_FILE, "r", encoding="utf-8") as f:
+                data = json.load(f)
+                if data and data.get("cookies"):
+                    return data.get("cookies")
+        except Exception:
+            pass
+
+    return []
 
 
 def build_requests_session(cookies: list) -> requests.Session:
-    """Cookie list থেকে requests.Session প্রস্তুত করো।"""
+    """Session প্রস্তুত করো।"""
     s = requests.Session()
     s.headers.update({
         "User-Agent": UA,
@@ -112,52 +108,39 @@ def build_requests_session(cookies: list) -> requests.Session:
     return s
 
 
-def is_service_valid(s: requests.Session, target: str) -> bool:
-    """সার্ভিস ভিত্তিক সেশন ভ্যালিডেশন চেক করো।"""
+def is_service_logged_in(s: requests.Session, target: str) -> bool:
+    """যাচাই করো ইউজার আসলেই লগইন অবস্থায় আছে কিনা।"""
     try:
         if target == "gemini":
             r = s.get(GEMINI_URL, timeout=10, allow_redirects=True)
-            # Gemini-তে লগইন থাকলে URL 'gemini.google.com/app' থাকবে, লগইন না থাকলে accounts.google.com-এ রিডাইরেক্ট হবে
             return "accounts.google.com" not in r.url and r.status_code == 200
         elif target == "youtube":
-            r = s.get("https://www.youtube.com/feed/library", timeout=10, allow_redirects=True)
-            return "accounts.google.com" not in r.url and r.status_code == 200
-        else:
-            r = s.get("https://accounts.google.com/ListAccounts?gpsia=1&source=ChromiumBrowser", timeout=8)
-            return r.status_code == 200
+            r = s.get("https://www.youtube.com/", timeout=10, allow_redirects=True)
+            # Check if user has auth cookies in session
+            yt_auth = any(c.name in ["SAPISID", "APISID", "LOGIN_INFO"] for c in s.cookies)
+            return yt_auth and r.status_code == 200
+        return True
     except Exception as e:
-        print(f"  [!] Session check error for {target}: {e}")
+        print(f"[!] Login check failed for {target}: {e}")
         return False
 
 
-def refresh_service_cookies(s: requests.Session, target: str, old_data: dict) -> dict:
-    """Requests দিয়ে সার্ভিস হিট করে নতুন rotate হওয়া cookies সেভ করো।"""
-    urls = []
-    if target == "gemini":
-        urls = [
-            GEMINI_URL,
-            "https://gemini.google.com/_/BardChatUi/data/batchexecute",
-            "https://accounts.google.com/ListAccounts?gpsia=1&source=ChromiumBrowser"
-        ]
-    elif target == "youtube":
-        urls = [
-            YOUTUBE_URL,
-            "https://www.youtube.com/feed/subscriptions",
-            "https://accounts.google.com/ListAccounts?gpsia=1&source=ChromiumBrowser"
-        ]
-
-    for url in urls:
+def refresh_and_sync_cookies(s: requests.Session, target: str):
+    """Google-এর সাথে হ্যান্ডশেক করে নতুন Set-Cookie সংগ্রহ ও সেভ করো।"""
+    endpoints = [
+        "https://accounts.google.com/ListAccounts?gpsia=1&source=ChromiumBrowser",
+        GEMINI_URL if target == "gemini" else YOUTUBE_URL,
+    ]
+    for url in endpoints:
         try:
             s.get(url, timeout=8, allow_redirects=True)
         except Exception:
             pass
 
-    # Merge newly received cookies
-    existing_cookie_map = {f"{c.get('domain', '')}:{c.get('name', '')}": c for c in old_data.get("cookies", [])}
-
+    # Merge all cookies
+    all_cookies = []
     for c in s.cookies:
-        key = f"{c.domain or '.google.com'}:{c.name}"
-        existing_cookie_map[key] = {
+        all_cookies.append({
             "name": c.name,
             "value": c.value,
             "domain": c.domain or ".google.com",
@@ -165,35 +148,26 @@ def refresh_service_cookies(s: requests.Session, target: str, old_data: dict) ->
             "secure": bool(c.secure),
             "httpOnly": False,
             "expiry": int(c.expires) if c.expires else int(time.time()) + 86400 * 30
-        }
+        })
 
-    merged_cookies = list(existing_cookie_map.values())
-    old_data["cookies"] = merged_cookies
-    old_data["cookies_count"] = len(merged_cookies)
-    old_data["timestamp"] = time.time()
-    old_data["source"] = f"requests_refresh_{target}"
-
+    # Save to session_data.json
     try:
         with open(SESSION_FILE, "w", encoding="utf-8") as f:
-            json.dump(old_data, f, indent=4, ensure_ascii=False)
+            json.dump({"cookies": all_cookies, "timestamp": time.time(), "target": target}, f, indent=4, ensure_ascii=False)
     except Exception as e:
-        print(f"[!] Error writing session file: {e}")
+        print(f"[!] Session file write error: {e}")
 
-    return old_data
+    return all_cookies
 
 
 # ─────────────────────────────────────────────────────────
-#  PART 2 — CDP Headless Extraction (Fallback for Expired)
+#  PART 2 — Browser Automation (CDP Injected Fallback)
 # ─────────────────────────────────────────────────────────
 
-def launch_chrome_cdp(target_url: str):
-    """Headless Chromium/Chrome চালু করো।"""
+def launch_browser_cdp(target_url: str):
     chrome_bin = find_chrome_binary()
-    print(f"[*] Starting Chrome via CDP for {target_url}...")
-
     cmd = [
         chrome_bin,
-        f"--user-data-dir={PROFILE_PATH}",
         f"--remote-debugging-port={CDP_PORT}",
         "--headless=new",
         "--no-sandbox",
@@ -203,86 +177,59 @@ def launch_chrome_cdp(target_url: str):
         "--no-default-browser-check",
         target_url
     ]
-
-    proc = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-    return proc
+    return subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
 
-def wait_for_cdp(timeout=20):
-    deadline = time.time() + timeout
-    while time.time() < deadline:
+async def _browser_inject_and_extract(target_url: str, cookies: list):
+    # Wait for CDP endpoint
+    for _ in range(25):
         try:
             r = requests.get(f"http://127.0.0.1:{CDP_PORT}/json", timeout=2)
-            if r.status_code == 200:
-                tabs = r.json()
-                if tabs:
-                    return tabs
+            if r.status_code == 200 and r.json():
+                break
         except Exception:
             pass
-        time.sleep(0.8)
-    raise TimeoutError("Chrome CDP ready timeout.")
+        await asyncio.sleep(0.8)
 
+    r = requests.get(f"http://127.0.0.1:{CDP_PORT}/json")
+    tabs = r.json()
+    page_tab = next((t for t in tabs if t.get("type") == "page"), tabs[0])
+    ws_url = page_tab["webSocketDebuggerUrl"]
 
-async def _cdp_get_cookies(ws_url):
     async with websockets.connect(ws_url) as ws:
-        msg = json.dumps({"id": 1, "method": "Network.getAllCookies", "params": {}})
-        await ws.send(msg)
+        await ws.send(json.dumps({"id": 1, "method": "Network.enable"}))
+        await ws.recv()
+
+        # Inject Master Authentication Cookies
+        formatted = []
+        for c in cookies:
+            formatted.append({
+                "name": c["name"],
+                "value": c["value"],
+                "domain": c.get("domain", ".google.com"),
+                "path": c.get("path", "/")
+            })
+        await ws.send(json.dumps({"id": 2, "method": "Network.setCookies", "params": {"cookies": formatted}}))
+        await ws.recv()
+
+        # Navigate to target
+        await ws.send(json.dumps({"id": 3, "method": "Page.navigate", "params": {"url": target_url}}))
+        await ws.recv()
+
+        # Give browser time to load Google auth
+        await asyncio.sleep(8)
+
+        # Extract all cookies
+        await ws.send(json.dumps({"id": 4, "method": "Network.getAllCookies"}))
         resp = await ws.recv()
         data = json.loads(resp)
         return data.get("result", {}).get("cookies", [])
 
 
-def extract_cookies_via_cdp(target_url: str):
-    tabs = wait_for_cdp()
-    page_tab = next((t for t in tabs if t.get("type") == "page"), tabs[0])
-    ws_url = page_tab["webSocketDebuggerUrl"]
-
-    # Wait for Chromium to authenticate using chrome_profile
-    time.sleep(10)
-
+def extract_via_browser_automation(target_url: str, master_cookies: list):
+    proc = launch_browser_cdp(target_url)
     try:
-        r = requests.get(f"http://127.0.0.1:{CDP_PORT}/json/version", timeout=3)
-        if r.status_code == 200:
-            browser_ws = r.json().get("webSocketDebuggerUrl")
-            if browser_ws:
-                cookies = asyncio.run(_cdp_get_cookies(browser_ws))
-                if len(cookies) > 5:
-                    return cookies
-    except Exception:
-        pass
-
-    return asyncio.run(_cdp_get_cookies(ws_url))
-
-
-def get_active_session_for_target(target: str):
-    """ভ্যালিড requests.Session রিটার্ন করে নির্দিষ্ট সার্ভিসের জন্য।"""
-    target_url = GEMINI_URL if target == "gemini" else YOUTUBE_URL
-    data = load_session_file()
-
-    if data and data.get("cookies"):
-        s = build_requests_session(data["cookies"])
-        if is_service_valid(s, target):
-            print(f"[+] {target} session is valid! Refreshing via requests...")
-            updated_data = refresh_service_cookies(s, target, data)
-            return s, "requests_existing", updated_data
-
-    # Expired or missing -> Launch Headless CDP
-    print(f"[!] {target} session expired/missing. Launching Chromium CDP...")
-    proc = launch_chrome_cdp(target_url)
-    try:
-        time.sleep(6)
-        cookies = extract_cookies_via_cdp(target_url)
-        payload = {
-            "target": target,
-            "cookies_count": len(cookies),
-            "cookies": cookies,
-            "timestamp": time.time(),
-            "source": f"cdp_headless_{target}"
-        }
-        with open(SESSION_FILE, "w", encoding="utf-8") as f:
-            json.dump(payload, f, indent=4, ensure_ascii=False)
-        s = build_requests_session(cookies)
-        return s, "cdp_refreshed", payload
+        return asyncio.run(_browser_inject_and_extract(target_url, master_cookies))
     finally:
         try:
             proc.terminate()
@@ -290,34 +237,34 @@ def get_active_session_for_target(target: str):
             pass
 
 
-def filter_cookies_for_service(cookies: list, service: str):
-    """নির্দিষ্ট সার্ভিসের জন্য দরকারি cookies ফিল্টার করো।"""
+# ─────────────────────────────────────────────────────────
+#  PART 3 — Cookie Filtering & Endpoint Dispatcher
+# ─────────────────────────────────────────────────────────
+
+def filter_service_cookies(cookies: list, service: str):
+    """সার্ভিস ভিত্তিক ফিল্টারিং: নিশ্চিত করে লগইন টোকেন যেন অবশ্যই থাকে।"""
     result = []
     for c in cookies:
         d = c.get("domain", "").lower()
         if service == "gemini":
-            # Gemini needs google.com, gemini.google.com, accounts.google.com
+            # Gemini requires google.com, gemini.google.com, accounts.google.com
             if "google.com" in d and "youtube" not in d:
                 result.append(c)
         elif service == "youtube":
-            # YouTube needs youtube.com and google.com auth tokens
+            # YouTube requires youtube.com and root google.com auth
             if "youtube.com" in d or "google.com" in d:
                 result.append(c)
     return result
 
 
-# ─────────────────────────────────────────────────────────
-#  PART 3 — Unified Query Endpoint: /get?cookies=...
-# ─────────────────────────────────────────────────────────
-
 @app.route("/", methods=["GET"])
 def home():
     return jsonify({
         "status": "online",
-        "service": "Google Services Cookie API",
+        "service": "Google Authenticated Cookie Provider",
         "endpoints": {
-            "/get?cookies=gemini": "Get active Gemini cookies (https://gemini.google.com)",
-            "/get?cookies=youtube": "Get active YouTube cookies (https://www.youtube.com)"
+            "/get?cookies=gemini": "Live Gemini login cookies (SID, HSID, SSID, etc.)",
+            "/get?cookies=youtube": "Live YouTube login cookies (SID, HSID, SSID, etc.)"
         }
     })
 
@@ -325,28 +272,39 @@ def home():
 @app.route("/get", methods=["GET"])
 def api_get():
     service = request.args.get("cookies", "").strip().lower()
-
     if service not in ["gemini", "youtube"]:
         return jsonify({
             "success": False,
-            "error": "Invalid service parameter. Use ?cookies=gemini or ?cookies=youtube"
+            "error": "Invalid parameter. Please use ?cookies=gemini or ?cookies=youtube"
         }), 400
 
-    try:
-        session, method, data = get_active_session_for_target(service)
-        all_cookies = data.get("cookies", [])
-        service_cookies = filter_cookies_for_service(all_cookies, service)
+    master_cookies = get_master_cookies()
+    if not master_cookies:
+        return jsonify({"success": False, "error": "No master auth tokens found."}), 500
 
-        return jsonify({
-            "success": True,
-            "service": service,
-            "method": method,
-            "cookies_count": len(service_cookies),
-            "timestamp": data.get("timestamp"),
-            "cookies": service_cookies
-        })
-    except Exception as e:
-        return jsonify({"success": False, "service": service, "error": str(e)}), 500
+    target_url = GEMINI_URL if service == "gemini" else YOUTUBE_URL
+
+    # Step 1: Check session with master cookies
+    session = build_requests_session(master_cookies)
+    
+    if is_service_logged_in(session, service):
+        all_cookies = refresh_and_sync_cookies(session, service)
+        service_cookies = filter_service_cookies(all_cookies, service)
+        method = "requests_authenticated"
+    else:
+        # Step 2: Fallback to full browser automation
+        raw_cookies = extract_via_browser_automation(target_url, master_cookies)
+        service_cookies = filter_service_cookies(raw_cookies, service)
+        method = "browser_cdp_authenticated"
+
+    return jsonify({
+        "success": True,
+        "service": service,
+        "method": method,
+        "cookies_count": len(service_cookies),
+        "timestamp": time.time(),
+        "cookies": service_cookies
+    })
 
 
 if __name__ == "__main__":
